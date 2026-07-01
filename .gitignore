@@ -5,9 +5,14 @@ build
 *.log
 .env
 .env.local
+# Only relevant if TURSO_DATABASE_URL is set to a local file:... URL for testing.
 data/*.sqlite
 data/*.sqlite-journal
 data/*.sqlite-wal
 data/*.sqlite-shm
+data/*.db
+data/*.db-journal
+data/*.db-wal
+data/*.db-shm
 .DS_Store
 *.tsbuildinfo

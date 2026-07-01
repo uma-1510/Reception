@@ -2,7 +2,6 @@ import type Anthropic from "@anthropic-ai/sdk";
 import {
   bookAppointment,
   cancelAppointment,
-  findAppointments,
   getAvailability,
   rescheduleAppointment,
   resolveDate,
@@ -144,14 +143,14 @@ export interface ToolExecutionResult {
   transferred: boolean;
 }
 
-export function executeTool(name: string, rawInput: unknown): ToolExecutionResult {
+export async function executeTool(name: string, rawInput: unknown): Promise<ToolExecutionResult> {
   const input = (rawInput ?? {}) as Record<string, unknown>;
 
   console.log(`\n[tool_call] ${name}`, JSON.stringify(input));
 
   let result: ToolExecutionResult;
   try {
-    result = runTool(name, input);
+    result = await runTool(name, input);
   } catch (err) {
     // A DB error, malformed input, etc. should degrade the turn, not crash it.
     console.error(`[tool_error] ${name} threw:`, err);
@@ -167,12 +166,12 @@ export function executeTool(name: string, rawInput: unknown): ToolExecutionResul
   return result;
 }
 
-function runTool(name: string, input: Record<string, unknown>): ToolExecutionResult {
+async function runTool(name: string, input: Record<string, unknown>): Promise<ToolExecutionResult> {
   switch (name) {
     case "check_availability": {
       const date = resolveDate(String(input.date ?? ""));
       const timeOfDay = input.time_of_day as TimeOfDay | undefined;
-      const slots = getAvailability(date, timeOfDay);
+      const slots = await getAvailability(date, timeOfDay);
 
       if (slots.length === 0) {
         return {
@@ -192,7 +191,7 @@ function runTool(name: string, input: Record<string, unknown>): ToolExecutionRes
 
     case "book_appointment": {
       const date = resolveDate(String(input.date ?? ""));
-      const result = bookAppointment({
+      const result = await bookAppointment({
         date,
         start_time: String(input.start_time ?? ""),
         customer_name: String(input.customer_name ?? ""),
@@ -216,7 +215,7 @@ function runTool(name: string, input: Record<string, unknown>): ToolExecutionRes
 
     case "reschedule_appointment": {
       const newDate = resolveDate(String(input.new_date ?? ""));
-      const result = rescheduleAppointment({
+      const result = await rescheduleAppointment({
         appointment_id: input.appointment_id ? Number(input.appointment_id) : undefined,
         customer_name: input.customer_name ? String(input.customer_name) : undefined,
         phone: input.phone ? String(input.phone) : undefined,
@@ -238,8 +237,6 @@ function runTool(name: string, input: Record<string, unknown>): ToolExecutionRes
 
     case "cancel_appointment": {
       if (!input.appointment_id && !input.customer_name && !input.phone) {
-        const matches = findAppointments({});
-        void matches;
         return {
           content: "Need an appointment ID, customer name, or phone number to find the appointment.",
           isError: true,
@@ -247,7 +244,7 @@ function runTool(name: string, input: Record<string, unknown>): ToolExecutionRes
         };
       }
 
-      const result = cancelAppointment({
+      const result = await cancelAppointment({
         appointment_id: input.appointment_id ? Number(input.appointment_id) : undefined,
         customer_name: input.customer_name ? String(input.customer_name) : undefined,
         phone: input.phone ? String(input.phone) : undefined,

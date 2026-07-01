@@ -9,12 +9,14 @@ works and how it'd evolve for a real phone line.
 ## Setup
 
 Requirements: Node 20+, an [Anthropic API key](https://console.anthropic.com/),
-and **Chrome** (or another Chromium browser — Firefox/Safari don't support
-the Web Speech API's `SpeechRecognition`).
+a Turso database (see below — free tier, ~2 minutes to create), and **Chrome**
+(or another Chromium browser — Firefox/Safari don't support the Web Speech
+API's `SpeechRecognition`).
 
 ```bash
 npm install
-echo "ANTHROPIC_API_KEY=sk-ant-..." > .env.local
+cp .env.example .env.local
+# fill in ANTHROPIC_API_KEY, TURSO_DATABASE_URL, TURSO_AUTH_TOKEN in .env.local
 npm run dev
 ```
 
@@ -30,18 +32,56 @@ stack does differently.
 Text input works in every browser as a fallback/supplement to voice, and
 doesn't require a microphone.
 
+### Database setup (Turso)
+
+The calendar, conversation history, and call log are stored in
+[Turso](https://turso.tech) (managed libSQL/SQLite). To create a free database:
+
+1. Install the CLI and sign up (free, no credit card):
+   ```bash
+   curl -sSfL https://get.tur.so/install.sh | bash
+   turso auth signup
+   ```
+2. Create a database and grab its connection URL:
+   ```bash
+   turso db create voice-agent
+   turso db show voice-agent --url
+   ```
+3. Mint an auth token:
+   ```bash
+   turso db tokens create voice-agent
+   ```
+4. Put both values in `.env.local`:
+   ```bash
+   TURSO_DATABASE_URL=libsql://voice-agent-<your-org>.turso.io
+   TURSO_AUTH_TOKEN=eyJ...
+   ```
+
+The app creates its own schema and seeds calendar availability on first run —
+no migration step needed.
+
+**Local-only testing without a Turso account:** `@libsql/client` also speaks
+plain SQLite file URLs, so `TURSO_DATABASE_URL=file:./data/local.db` (no
+`TURSO_AUTH_TOKEN` needed) works for local development — same code path, same
+schema, just a file on disk instead of Turso's network. `data/` is already
+gitignored for this case. Switch back to a real `libsql://` URL for anything
+you want to survive machine restarts or be queryable from the call log across
+multiple machines.
+
 ## What's real vs. mocked
 
 **Real:**
 - Actual Claude API calls (`claude-opus-4-8`) with real tool-calling and
   streaming — no canned responses.
-- A real SQLite calendar (`better-sqlite3`) with genuine slot-collision
-  prevention, reschedule/cancel logic, and seeded availability — booking the
-  same slot twice actually fails.
+- A real calendar (Turso/libSQL) with genuine slot-collision prevention
+  (booking two requests for the same slot in a race is resolved by a real
+  serialized write transaction, not just app-level luck), reschedule/cancel
+  logic, and seeded availability — booking the same slot twice actually
+  fails.
 - Real browser speech recognition and synthesis (Web Speech API) — not a
   simulated transcript.
 - Conversation history, tool-call logs, and call summaries are persisted to
-  SQLite and genuinely queryable (`app/calls`).
+  Turso and genuinely queryable (`app/calls`).
 - The escalation detector (`lib/agent/escalation.ts`) runs real pattern
   matching against the actual transcript text and barge-in counts, not a
   canned demo trigger.
@@ -92,7 +132,7 @@ lib/
     calendar.ts               Availability/booking/reschedule/cancel logic
     conversations.ts          Message persistence
     callLog.ts                Tool-call logging + call summaries (backs /calls)
-    index.ts                  SQLite connection + schema + seed data
+    index.ts                  Turso/libSQL client, schema, seed data
 ```
 
 ## Extending with Twilio for real phone calls
@@ -133,7 +173,10 @@ audio got there. The parts that change:
 
 6. **Persistence stays the same.** `lib/db` doesn't know or care whether the
    caller was a browser tab or a phone number — `session_id` just becomes
-   the Twilio Call SID instead of a browser-generated UUID.
+   the Twilio Call SID instead of a browser-generated UUID. It also already
+   runs against a real network database (Turso), so this part needs no
+   changes at all to handle multiple concurrent phone calls hitting the same
+   database from a server process instead of a single browser tab.
 
 ## Known limitations
 
@@ -141,9 +184,12 @@ audio got there. The parts that change:
   `lib/audio/browserSupport.ts`. Text chat works everywhere.
 - No echo cancellation for the continuous-listening + barge-in combination —
   use headphones (see above and `ARCHITECTURE.md`).
-- SQLite (`better-sqlite3`) is a single-file, single-process database — fine
-  for this demo, not for horizontally-scaled production traffic.
 - The call log has no authentication (see above).
 - Escalation detection is a deterministic pattern matcher feeding a soft
   prompt nudge, not a hard override — Claude still decides whether to
   actually call `transfer_to_human`. See `lib/agent/escalation.ts`.
+- Each `lib/db` call opens/awaits the shared Turso client rather than batching
+  round trips — fine at this traffic level; a high-volume deployment would
+  want to batch reads within a turn where possible (e.g. `check_availability`
+  followed immediately by `book_appointment` are two separate round trips
+  today).

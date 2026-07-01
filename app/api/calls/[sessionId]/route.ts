@@ -6,11 +6,15 @@ export async function GET(
   { params }: { params: Promise<{ sessionId: string }> }
 ) {
   const { sessionId } = await params;
-  const detail = getCallDetail(sessionId);
 
-  if (!detail) {
-    return NextResponse.json({ error: "Call not found" }, { status: 404 });
+  try {
+    const detail = await getCallDetail(sessionId);
+    if (!detail) {
+      return NextResponse.json({ error: "Call not found" }, { status: 404 });
+    }
+    return NextResponse.json(detail);
+  } catch (err) {
+    console.error("[api/calls/:sessionId] failed to load call:", err);
+    return NextResponse.json({ error: "Failed to load call." }, { status: 500 });
   }
-
-  return NextResponse.json(detail);
 }

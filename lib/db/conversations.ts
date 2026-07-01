@@ -3,13 +3,13 @@ import { getDb } from "./index";
 
 export type StoredMessage = Anthropic.MessageParam;
 
-export function getConversation(sessionId: string): StoredMessage[] {
-  const db = getDb();
-  const rows = db
-    .prepare(
-      `SELECT role, content FROM conversation_messages WHERE session_id = ? ORDER BY id ASC`
-    )
-    .all(sessionId) as { role: string; content: string }[];
+export async function getConversation(sessionId: string): Promise<StoredMessage[]> {
+  const db = await getDb();
+  const result = await db.execute({
+    sql: `SELECT role, content FROM conversation_messages WHERE session_id = ? ORDER BY id ASC`,
+    args: [sessionId],
+  });
+  const rows = result.rows as unknown as { role: string; content: string }[];
 
   return rows.map((row) => ({
     role: row.role as "user" | "assistant",
@@ -17,11 +17,12 @@ export function getConversation(sessionId: string): StoredMessage[] {
   }));
 }
 
-export function appendMessage(sessionId: string, message: StoredMessage): void {
-  const db = getDb();
-  db.prepare(
-    `INSERT INTO conversation_messages (session_id, role, content) VALUES (?, ?, ?)`
-  ).run(sessionId, message.role, JSON.stringify(message.content));
+export async function appendMessage(sessionId: string, message: StoredMessage): Promise<void> {
+  const db = await getDb();
+  await db.execute({
+    sql: `INSERT INTO conversation_messages (session_id, role, content) VALUES (?, ?, ?)`,
+    args: [sessionId, message.role, JSON.stringify(message.content)],
+  });
 }
 
 export interface DisplayMessage {
@@ -30,8 +31,8 @@ export interface DisplayMessage {
 }
 
 /** Text-only view of the transcript, for rendering in the chat UI (skips pure tool_use/tool_result turns). */
-export function getDisplayMessages(sessionId: string): DisplayMessage[] {
-  const messages = getConversation(sessionId);
+export async function getDisplayMessages(sessionId: string): Promise<DisplayMessage[]> {
+  const messages = await getConversation(sessionId);
   const display: DisplayMessage[] = [];
 
   for (const message of messages) {

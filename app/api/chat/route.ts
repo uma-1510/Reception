@@ -7,7 +7,12 @@ export async function GET(req: NextRequest) {
   if (!sessionId) {
     return NextResponse.json({ error: "sessionId is required" }, { status: 400 });
   }
-  return NextResponse.json({ messages: getDisplayMessages(sessionId) });
+  try {
+    return NextResponse.json({ messages: await getDisplayMessages(sessionId) });
+  } catch (err) {
+    console.error("[api/chat] failed to load history:", err);
+    return NextResponse.json({ error: "Failed to load conversation history." }, { status: 500 });
+  }
 }
 
 export async function POST(req: NextRequest) {

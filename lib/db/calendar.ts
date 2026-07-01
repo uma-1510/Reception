@@ -46,13 +46,13 @@ export function resolveDate(dateInput: string): string {
   return dateInput;
 }
 
-export function getAvailability(date: string, timeOfDay?: TimeOfDay): Slot[] {
-  const db = getDb();
-  const slots = db
-    .prepare(
-      `SELECT * FROM availability_slots WHERE date = ? AND is_booked = 0 ORDER BY start_time`
-    )
-    .all(date) as Slot[];
+export async function getAvailability(date: string, timeOfDay?: TimeOfDay): Promise<Slot[]> {
+  const db = await getDb();
+  const result = await db.execute({
+    sql: `SELECT * FROM availability_slots WHERE date = ? AND is_booked = 0 ORDER BY start_time`,
+    args: [date],
+  });
+  const slots = result.rows as unknown as Slot[];
 
   return slots.filter((s) => timeOfDayFilter(s.start_time, timeOfDay));
 }
@@ -69,47 +69,62 @@ export type BookAppointmentResult =
   | { ok: true; appointment: Appointment }
   | { ok: false; error: string };
 
-export function bookAppointment(input: BookAppointmentInput): BookAppointmentResult {
-  const db = getDb();
+/**
+ * The slot-availability check and the booking write happen in the same
+ * "write" transaction (not just a read-then-write pair) so two concurrent
+ * bookings for the same slot can't both pass the check before either
+ * commits — libSQL serializes write transactions on the server, so the
+ * second one sees the first's update once it gets its turn.
+ */
+export async function bookAppointment(input: BookAppointmentInput): Promise<BookAppointmentResult> {
+  const db = await getDb();
+  const tx = await db.transaction("write");
 
-  const slot = db
-    .prepare(
-      `SELECT * FROM availability_slots WHERE date = ? AND start_time = ? AND is_booked = 0`
-    )
-    .get(input.date, input.start_time) as Slot | undefined;
+  try {
+    const slotResult = await tx.execute({
+      sql: `SELECT * FROM availability_slots WHERE date = ? AND start_time = ? AND is_booked = 0`,
+      args: [input.date, input.start_time],
+    });
+    const slot = slotResult.rows[0] as unknown as Slot | undefined;
 
-  if (!slot) {
-    return {
-      ok: false,
-      error: `No open slot at ${input.date} ${input.start_time}. It may already be booked or not exist.`,
-    };
-  }
+    if (!slot) {
+      await tx.rollback();
+      return {
+        ok: false,
+        error: `No open slot at ${input.date} ${input.start_time}. It may already be booked or not exist.`,
+      };
+    }
 
-  const txn = db.transaction(() => {
-    db.prepare(`UPDATE availability_slots SET is_booked = 1 WHERE id = ?`).run(slot.id);
-    const result = db
-      .prepare(
-        `INSERT INTO appointments (slot_id, customer_name, phone, service, date, start_time, end_time, status)
-         VALUES (?, ?, ?, ?, ?, ?, ?, 'booked')`
-      )
-      .run(
+    await tx.execute({
+      sql: `UPDATE availability_slots SET is_booked = 1 WHERE id = ?`,
+      args: [slot.id],
+    });
+
+    const insertResult = await tx.execute({
+      sql: `INSERT INTO appointments (slot_id, customer_name, phone, service, date, start_time, end_time, status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 'booked')`,
+      args: [
         slot.id,
         input.customer_name,
         input.phone ?? null,
         input.service ?? null,
         input.date,
         slot.start_time,
-        slot.end_time
-      );
-    return result.lastInsertRowid as number;
-  });
+        slot.end_time,
+      ],
+    });
+    const appointmentId = Number(insertResult.lastInsertRowid);
 
-  const appointmentId = txn();
-  const appointment = db
-    .prepare(`SELECT * FROM appointments WHERE id = ?`)
-    .get(appointmentId) as Appointment;
+    const apptResult = await tx.execute({
+      sql: `SELECT * FROM appointments WHERE id = ?`,
+      args: [appointmentId],
+    });
 
-  return { ok: true, appointment };
+    await tx.commit();
+    return { ok: true, appointment: apptResult.rows[0] as unknown as Appointment };
+  } finally {
+    tx.close();
+  }
 }
 
 export interface FindAppointmentInput {
@@ -118,13 +133,15 @@ export interface FindAppointmentInput {
   phone?: string;
 }
 
-export function findAppointments(input: FindAppointmentInput): Appointment[] {
-  const db = getDb();
+export async function findAppointments(input: FindAppointmentInput): Promise<Appointment[]> {
+  const db = await getDb();
 
   if (input.appointment_id) {
-    const appt = db
-      .prepare(`SELECT * FROM appointments WHERE id = ? AND status = 'booked'`)
-      .get(input.appointment_id) as Appointment | undefined;
+    const result = await db.execute({
+      sql: `SELECT * FROM appointments WHERE id = ? AND status = 'booked'`,
+      args: [input.appointment_id],
+    });
+    const appt = result.rows[0] as unknown as Appointment | undefined;
     return appt ? [appt] : [];
   }
 
@@ -142,9 +159,11 @@ export function findAppointments(input: FindAppointmentInput): Appointment[] {
 
   if (params.length === 0) return [];
 
-  return db
-    .prepare(`SELECT * FROM appointments WHERE ${clauses.join(" AND ")} ORDER BY date, start_time`)
-    .all(...params) as Appointment[];
+  const result = await db.execute({
+    sql: `SELECT * FROM appointments WHERE ${clauses.join(" AND ")} ORDER BY date, start_time`,
+    args: params,
+  });
+  return result.rows as unknown as Appointment[];
 }
 
 export interface RescheduleAppointmentInput {
@@ -159,10 +178,12 @@ export type RescheduleResult =
   | { ok: true; appointment: Appointment }
   | { ok: false; error: string };
 
-export function rescheduleAppointment(input: RescheduleAppointmentInput): RescheduleResult {
-  const db = getDb();
+export async function rescheduleAppointment(
+  input: RescheduleAppointmentInput
+): Promise<RescheduleResult> {
+  const db = await getDb();
 
-  const matches = findAppointments({
+  const matches = await findAppointments({
     appointment_id: input.appointment_id,
     customer_name: input.customer_name,
     phone: input.phone,
@@ -180,11 +201,11 @@ export function rescheduleAppointment(input: RescheduleAppointmentInput): Resche
 
   const appointment = matches[0];
 
-  const newSlot = db
-    .prepare(
-      `SELECT * FROM availability_slots WHERE date = ? AND start_time = ? AND is_booked = 0`
-    )
-    .get(input.new_date, input.new_start_time) as Slot | undefined;
+  const newSlotResult = await db.execute({
+    sql: `SELECT * FROM availability_slots WHERE date = ? AND start_time = ? AND is_booked = 0`,
+    args: [input.new_date, input.new_start_time],
+  });
+  const newSlot = newSlotResult.rows[0] as unknown as Slot | undefined;
 
   if (!newSlot) {
     return {
@@ -193,24 +214,33 @@ export function rescheduleAppointment(input: RescheduleAppointmentInput): Resche
     };
   }
 
-  const txn = db.transaction(() => {
-    db.prepare(`UPDATE availability_slots SET is_booked = 0 WHERE id = ?`).run(
-      appointment.slot_id
-    );
-    db.prepare(`UPDATE availability_slots SET is_booked = 1 WHERE id = ?`).run(newSlot.id);
-    db.prepare(
-      `UPDATE appointments
-       SET slot_id = ?, date = ?, start_time = ?, end_time = ?, updated_at = datetime('now')
-       WHERE id = ?`
-    ).run(newSlot.id, newSlot.date, newSlot.start_time, newSlot.end_time, appointment.id);
+  const tx = await db.transaction("write");
+  try {
+    await tx.execute({
+      sql: `UPDATE availability_slots SET is_booked = 0 WHERE id = ?`,
+      args: [appointment.slot_id],
+    });
+    await tx.execute({
+      sql: `UPDATE availability_slots SET is_booked = 1 WHERE id = ?`,
+      args: [newSlot.id],
+    });
+    await tx.execute({
+      sql: `UPDATE appointments
+            SET slot_id = ?, date = ?, start_time = ?, end_time = ?, updated_at = datetime('now')
+            WHERE id = ?`,
+      args: [newSlot.id, newSlot.date, newSlot.start_time, newSlot.end_time, appointment.id],
+    });
+    await tx.commit();
+  } finally {
+    tx.close();
+  }
+
+  const updatedResult = await db.execute({
+    sql: `SELECT * FROM appointments WHERE id = ?`,
+    args: [appointment.id],
   });
-  txn();
 
-  const updated = db
-    .prepare(`SELECT * FROM appointments WHERE id = ?`)
-    .get(appointment.id) as Appointment;
-
-  return { ok: true, appointment: updated };
+  return { ok: true, appointment: updatedResult.rows[0] as unknown as Appointment };
 }
 
 export interface CancelAppointmentInput {
@@ -221,10 +251,10 @@ export interface CancelAppointmentInput {
 
 export type CancelResult = { ok: true; appointment: Appointment } | { ok: false; error: string };
 
-export function cancelAppointment(input: CancelAppointmentInput): CancelResult {
-  const db = getDb();
+export async function cancelAppointment(input: CancelAppointmentInput): Promise<CancelResult> {
+  const db = await getDb();
 
-  const matches = findAppointments(input);
+  const matches = await findAppointments(input);
 
   if (matches.length === 0) {
     return { ok: false, error: "No matching booked appointment found." };
@@ -238,19 +268,25 @@ export function cancelAppointment(input: CancelAppointmentInput): CancelResult {
 
   const appointment = matches[0];
 
-  const txn = db.transaction(() => {
-    db.prepare(`UPDATE availability_slots SET is_booked = 0 WHERE id = ?`).run(
-      appointment.slot_id
-    );
-    db.prepare(
-      `UPDATE appointments SET status = 'cancelled', updated_at = datetime('now') WHERE id = ?`
-    ).run(appointment.id);
+  const tx = await db.transaction("write");
+  try {
+    await tx.execute({
+      sql: `UPDATE availability_slots SET is_booked = 0 WHERE id = ?`,
+      args: [appointment.slot_id],
+    });
+    await tx.execute({
+      sql: `UPDATE appointments SET status = 'cancelled', updated_at = datetime('now') WHERE id = ?`,
+      args: [appointment.id],
+    });
+    await tx.commit();
+  } finally {
+    tx.close();
+  }
+
+  const updatedResult = await db.execute({
+    sql: `SELECT * FROM appointments WHERE id = ?`,
+    args: [appointment.id],
   });
-  txn();
 
-  const updated = db
-    .prepare(`SELECT * FROM appointments WHERE id = ?`)
-    .get(appointment.id) as Appointment;
-
-  return { ok: true, appointment: updated };
+  return { ok: true, appointment: updatedResult.rows[0] as unknown as Appointment };
 }

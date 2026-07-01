@@ -59,9 +59,9 @@ export async function runAgentTurn(
   const client = getAnthropicClient();
 
   const userMessage: Anthropic.MessageParam = { role: "user", content: userText };
-  appendMessage(sessionId, userMessage);
+  await appendMessage(sessionId, userMessage);
 
-  const messages: Anthropic.MessageParam[] = [...getConversation(sessionId)];
+  const messages: Anthropic.MessageParam[] = [...(await getConversation(sessionId))];
   const escalation = applyEscalationNudge(messages, userText, sessionId, context);
   const escalationReasons = escalation.flagged ? escalation.reasons : undefined;
 
@@ -92,7 +92,7 @@ export async function runAgentTurn(
       role: "assistant",
       content: response.content,
     };
-    appendMessage(sessionId, assistantMessage);
+    await appendMessage(sessionId, assistantMessage);
     messages.push(assistantMessage);
 
     if (response.stop_reason === "refusal") {
@@ -114,8 +114,8 @@ export async function runAgentTurn(
 
     const toolResults: Anthropic.ToolResultBlockParam[] = [];
     for (const block of toolUseBlocks) {
-      const result = executeTool(block.name, block.input);
-      logToolCall(sessionId, block.name, block.input, result);
+      const result = await executeTool(block.name, block.input);
+      await logToolCall(sessionId, block.name, block.input, result);
       if (result.transferred) transferred = true;
 
       toolResults.push({
@@ -127,7 +127,7 @@ export async function runAgentTurn(
     }
 
     const toolResultMessage: Anthropic.MessageParam = { role: "user", content: toolResults };
-    appendMessage(sessionId, toolResultMessage);
+    await appendMessage(sessionId, toolResultMessage);
     messages.push(toolResultMessage);
   }
 
@@ -177,9 +177,9 @@ export async function runAgentTurnStream(
   const client = getAnthropicClient();
 
   const userMessage: Anthropic.MessageParam = { role: "user", content: userText };
-  appendMessage(sessionId, userMessage);
+  await appendMessage(sessionId, userMessage);
 
-  const messages: Anthropic.MessageParam[] = [...getConversation(sessionId)];
+  const messages: Anthropic.MessageParam[] = [...(await getConversation(sessionId))];
   const escalation = applyEscalationNudge(messages, userText, sessionId, context);
   if (escalation.flagged) {
     emit({ type: "escalation_detected", reasons: escalation.reasons });
@@ -222,7 +222,7 @@ export async function runAgentTurnStream(
       role: "assistant",
       content: response.content,
     };
-    appendMessage(sessionId, assistantMessage);
+    await appendMessage(sessionId, assistantMessage);
     messages.push(assistantMessage);
 
     if (response.stop_reason === "refusal") {
@@ -247,8 +247,8 @@ export async function runAgentTurnStream(
     const toolResults: Anthropic.ToolResultBlockParam[] = [];
     for (const block of toolUseBlocks) {
       emit({ type: "tool_call", name: block.name, input: block.input });
-      const result = executeTool(block.name, block.input);
-      logToolCall(sessionId, block.name, block.input, result);
+      const result = await executeTool(block.name, block.input);
+      await logToolCall(sessionId, block.name, block.input, result);
       if (result.transferred) transferred = true;
       emit({ type: "tool_result", name: block.name, isError: result.isError });
 
@@ -261,7 +261,7 @@ export async function runAgentTurnStream(
     }
 
     const toolResultMessage: Anthropic.MessageParam = { role: "user", content: toolResults };
-    appendMessage(sessionId, toolResultMessage);
+    await appendMessage(sessionId, toolResultMessage);
     messages.push(toolResultMessage);
   }
 

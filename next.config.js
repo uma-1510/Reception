@@ -2,7 +2,7 @@ const path = require("node:path");
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  serverExternalPackages: ["better-sqlite3"],
+  serverExternalPackages: ["@libsql/client", "libsql"],
   // Pin the workspace root to this project — otherwise Next's root inference
   // can walk up to an unrelated sibling project's lockfile/postcss config.
   turbopack: {

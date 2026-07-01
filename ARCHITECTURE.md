@@ -52,12 +52,12 @@ back as text that's converted to speech locally too.
  │       │                                                         │
  │       ├─ tool_use? ──▶ executeTool() (lib/agent/tools.ts)       │
  │       │        │         │                                      │
- │       │        │         └─ SQLite calendar (lib/db/calendar.ts)│
+ │       │        │         └─ Turso/libSQL calendar (lib/db/calendar.ts) │
  │       │        └─ logToolCall() ──▶ tool_call_log table         │
  │       │                                                         │
  │       └─ done ──▶ emit {reply, transferred}                     │
  │                                                                  │
- │  All messages + tool calls persisted to SQLite                  │
+ │  All messages + tool calls persisted to Turso (libSQL)          │
  │  (conversation_messages, tool_call_log) — feeds the call log UI │
  └──────────────────────────────────────────────────────────────────┘
 ```
@@ -154,9 +154,10 @@ production stack solves this properly (see below).
 ## Evolving to a paid streaming STT/TTS stack (Deepgram + ElevenLabs)
 
 The orchestrator (`lib/agent/orchestrator.ts`), tools (`lib/agent/tools.ts`),
-system prompt, and SQLite layer are already transport-agnostic — none of
-them know or care that today's audio is browser-based. That's the part of
-this stack that *doesn't* change. What does:
+system prompt, and DB layer (Turso/libSQL, already a real network database
+rather than a local file) are already transport-agnostic — none of them know
+or care that today's audio is browser-based. That's the part of this stack
+that *doesn't* change. What does:
 
 ### STT: Web Speech API → Deepgram streaming
 
